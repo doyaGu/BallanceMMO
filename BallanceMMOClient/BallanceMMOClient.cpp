@@ -39,7 +39,7 @@ void BallanceMMOClient::show_player_list() {
                     update_player_list(last_player_count, last_font_size);
                     std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 }
-                player_list_display_.reset();
+                utils_.schedule_sync_call([this] { player_list_display_.reset(); });
             });
         });
     });
@@ -116,7 +116,7 @@ inline void BallanceMMOClient::update_player_list(int& last_player_count, int& l
                 show_rankings ? std::format("({}) ", ranking) : "",
                 i.cheated ? "[C] " : "", i.name, map_display_name, i.sector, time_diff_str));
     }
-    if (text == last_player_list_text_) return; // only update if changed
+    if (text == last_player_list_text_) return; // only update if changed; lock auto released here
     last_player_list_text_ = text;
     lk.unlock();
 
