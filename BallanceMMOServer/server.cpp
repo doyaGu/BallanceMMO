@@ -104,6 +104,13 @@ public:
 
     auto& get_bulletin() { return permanent_notification_; }
 
+    auto& get_client(HSteamNetConnection client) {
+        auto client_it = clients_.find(client);
+        if (client_it == clients_.end())
+            Printf("Error: client #%u not found.", client);
+        return client_it->second;
+    }
+
     HSteamNetConnection get_client_id(const std::string& username, bool suppress_error = false) const {
         if (username.empty()) return k_HSteamNetConnection_Invalid;
         const std::string begin_name(bmmo::message_utils::to_lower(username));
@@ -1843,6 +1850,14 @@ int main(int argc, char** argv) {
             if (i != 0)
                 std::this_thread::sleep_for(std::chrono::seconds(1));
         }
+    });
+    console.register_command("dnf", [&] {
+        auto client = get_client_id_from_console();
+        if (client == k_HSteamNetConnection_Invalid) return;
+        bmmo::did_not_finish_msg msg{};
+        const auto& data = server.get_client(client);
+        msg.content = {.cheated = data.cheated, .map = data.current_map, .sector = data.current_sector};
+        server.receive(&msg, sizeof(msg), client);
     });
     console.register_command("bulletin", [&] {
         auto& bulletin = server.get_bulletin();
