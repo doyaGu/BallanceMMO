@@ -3,8 +3,11 @@
 #endif // !WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <Dbghelp.h>
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <iostream>
+#include <string>
 #include <vector>
 #include <tchar.h>
 #include <psapi.h>
@@ -24,6 +27,7 @@ namespace NSDumpFile {
     void* SetUnhandledExceptionFilterEntry = nullptr;
     LPTOP_LEVEL_EXCEPTION_FILTER PreviousUnhandledExceptionFilter = nullptr;
     bool SetUnhandledExceptionFilterPatched = false;
+    bool CrashHandlerInstalled = false;
 
     void CreateDumpFile(LPCSTR lpstrDumpFilePathName, EXCEPTION_POINTERS* pException)
     {
@@ -68,6 +72,28 @@ namespace NSDumpFile {
 
     std::function<void(char*)> CrashCallback{};
     static bool messageBoxTriggered = false;
+
+    bool IsOwnedExceptionAddress(void* address)
+    {
+        HMODULE module = nullptr;
+        const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+        if (!GetModuleHandleExA(flags, reinterpret_cast<LPCSTR>(address), &module))
+            return false;
+
+        char modulePath[MAX_PATH]{};
+        if (!GetModuleFileNameA(module, modulePath, sizeof(modulePath)))
+            return false;
+
+        std::string path = modulePath;
+        std::transform(path.begin(), path.end(), path.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        return path.ends_with("\\ballancemmoclient.bmodp") ||
+               path.ends_with("\\gamenetworkingsockets.dll") ||
+               path.ends_with("\\libcrypto-3.dll") ||
+               path.ends_with("\\libprotobuf.dll");
+    }
 
     bool WriteSetUnhandledExceptionFilterBytes(const unsigned char* bytes)
     {
@@ -133,6 +159,13 @@ namespace NSDumpFile {
 
     LONG WINAPI UnhandledExceptionFilterEx(struct ::_EXCEPTION_POINTERS* pException)
     {
+        if (!pException || !pException->ExceptionRecord ||
+                !IsOwnedExceptionAddress(pException->ExceptionRecord->ExceptionAddress)) {
+            if (PreviousUnhandledExceptionFilter)
+                return PreviousUnhandledExceptionFilter(pException);
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
         /*TCHAR szMbsFile[MAX_PATH] = { 0 };
         ::GetModuleFileName(NULL, szMbsFile, MAX_PATH);
         TCHAR* pFind = _tcsrchr(szMbsFile, '\\');
@@ -158,7 +191,8 @@ namespace NSDumpFile {
             return EXCEPTION_CONTINUE_SEARCH;
         std::string extraText;
         char callbackText[128]{};
-        CrashCallback(callbackText);
+        if (CrashCallback)
+            CrashCallback(callbackText);
         if (std::strlen(callbackText) != 0)
             extraText.append("--------\n").append(callbackText).append("\n");
         extraText = "Fatal Error\n" + extraText + "========\n"
@@ -197,16 +231,22 @@ namespace NSDumpFile {
 
     void RunCrashHandler(std::function<void(char*)> Callback)
     {
+        StopCrashHandler();
         CrashCallback = Callback;
         PreviousUnhandledExceptionFilter = SetUnhandledExceptionFilter(UnhandledExceptionFilterEx);
-        PreventSetUnhandledExceptionFilter();
+        CrashHandlerInstalled = true;
     }
 
     void StopCrashHandler()
     {
+        if (!CrashHandlerInstalled)
+            return;
+
         RestoreSetUnhandledExceptionFilter();
         SetUnhandledExceptionFilter(PreviousUnhandledExceptionFilter);
         PreviousUnhandledExceptionFilter = nullptr;
         CrashCallback = {};
+        messageBoxTriggered = false;
+        CrashHandlerInstalled = false;
     }
 }

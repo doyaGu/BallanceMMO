@@ -662,20 +662,29 @@ void BallanceMMOClient::OnExitGame()
 
 void BallanceMMOClient::begin_exit_game()
 {
-    std::lock_guard lk(bml_mtx_);
+    {
+        std::lock_guard lk(bml_mtx_);
 
-    if (exit_started_.exchange(true))
-        return;
+        if (exit_started_.exchange(true))
+            return;
 
-    init_ = false;
-    player_list_visible_ = false;
-    client_cv_.notify_all();
-    config_manager_.check_and_save_name_change_time();
+        NSDumpFile::StopCrashHandler();
+        init_ = false;
+        player_list_visible_ = false;
+        client_cv_.notify_all();
+        config_manager_.check_and_save_name_change_time();
 
-    if (move_size_hook_) {
-        UnhookWinEvent(move_size_hook_);
-        move_size_hook_ = nullptr;
+        if (move_size_hook_) {
+            UnhookWinEvent(move_size_hook_);
+            move_size_hook_ = nullptr;
+        }
     }
+
+    if (player_list_thread_.joinable())
+        player_list_thread_.join();
+
+    destroy_runtime_ck_resources(true);
+    destroy_exit_ui_resources();
 }
 
 void BallanceMMOClient::destroy_exit_ui_resources()
@@ -716,7 +725,6 @@ inline void BallanceMMOClient::on_fatal_error(char* extra_text) {
 void BallanceMMOClient::OnUnload() {
     begin_exit_game();
     cleanup(true, false);
-    destroy_exit_ui_resources();
     destroy_socket();
     NSDumpFile::StopCrashHandler();
 }
