@@ -685,6 +685,8 @@ void BallanceMMOClient::destroy_exit_ui_resources()
     {
         std::lock_guard player_list_lk(player_status_list_mtx_);
         last_player_list_text_.clear();
+        player_list_last_count_ = -1;
+        player_list_last_font_size_ = -1;
         player_list_display_.reset();
     }
 
@@ -1480,7 +1482,6 @@ void BallanceMMOClient::disconnect_from_server() {
         //status_->paint(0xffff0000);
         cleanup();
         SendIngameMessage("Disconnected.");
-
     }
 }
 

@@ -957,10 +957,6 @@ private:
 
 		resolving_endpoint_ = false;
 		logged_in_ = false;
-
-		if (down) // Since the game's going down, we don't care about text shown.
-			return;
-
 		db_.set_nickname(config_manager_["playername"]->GetString());
 		db_.set_client_id(k_HSteamNetConnection_Invalid + ((rand() << 16) | rand())); // invalid id indicates server
 	}
