@@ -6,7 +6,6 @@
 #include "BallanceMMOClient.h"
 
 IMod* BMLEntry(IBML* bml) {
-    BallanceMMOClient::init_socket();
     return new BallanceMMOClient(bml);
 }
 
@@ -714,9 +713,9 @@ inline void BallanceMMOClient::on_fatal_error(char* extra_text) {
 
 void BallanceMMOClient::OnUnload() {
     begin_exit_game();
-    cleanup(true);
+    cleanup(true, false);
     destroy_exit_ui_resources();
-    client::destroy();
+    destroy_socket();
     NSDumpFile::StopCrashHandler();
 }
 
@@ -1410,6 +1409,7 @@ void BallanceMMOClient::connect_to_server(const char* address, const char* name)
         });
         return;
     }
+    ensure_socket_initialized();
     if (connected() || connecting()) {
         disconnect_from_server();
         std::this_thread::sleep_for(std::chrono::milliseconds(200));

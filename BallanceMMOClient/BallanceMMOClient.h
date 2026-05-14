@@ -230,6 +230,7 @@ private:
 	std::thread ping_thread_;
 	std::thread player_list_thread_;
 
+	bool socket_initialized_ = false;
 	std::atomic_bool exit_started_ = false;
 	std::atomic_bool player_list_visible_ = false;
 	std::atomic<float> average_ping_ = 0; // why no atomic_float
@@ -847,6 +848,24 @@ private:
 
 	void begin_exit_game();
 	void destroy_exit_ui_resources();
+
+	inline void ensure_socket_initialized() {
+		if (socket_initialized_)
+			return;
+
+		init_socket();
+		interface_ = SteamNetworkingSockets();
+		socket_initialized_ = true;
+	}
+
+	inline void destroy_socket() {
+		if (!socket_initialized_)
+			return;
+
+		client::destroy();
+		interface_ = nullptr;
+		socket_initialized_ = false;
+	}
 
 	inline void schedule_runtime_cleanup() {
 		schedule_main_thread([this] {
