@@ -23,7 +23,7 @@ void BallanceMMOClient::show_player_list() {
         player_list_visible_ = false;
         if (player_list_thread_.joinable())
             player_list_thread_.join();
-        utils_.schedule_sync_call([this] {
+        schedule_main_thread([this] {
             player_list_display_ = std::make_unique<decltype(player_list_display_)::element_type>("PlayerList", "", RIGHT_MOST, 0.412f);
             player_list_display_->sprite_->SetPosition({0.596f, 0.412f});
             player_list_display_->sprite_->SetSize({RIGHT_MOST - 0.596f, 0.588f});
@@ -31,21 +31,29 @@ void BallanceMMOClient::show_player_list() {
             player_list_display_->paint(player_list_color_);
             // player_list_display_->paint_background(0x44444444);
             player_list_display_->set_visible(true);
+            player_list_last_count_ = -1;
+            player_list_last_font_size_ = -1;
+            {
+                std::lock_guard lk(player_status_list_mtx_);
+                last_player_list_text_.clear();
+            }
             player_list_thread_ = utils::create_named_thread(L"BMMO_PlayerList", [this] {
                 player_list_visible_ = true;
-                int last_player_count = -1, last_font_size = -1;
-                last_player_list_text_.clear();
                 while (player_list_visible_) {
-                    update_player_list(last_player_count, last_font_size);
+                    update_player_list();
                     std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 }
-                utils_.schedule_sync_call([this] { player_list_display_.reset(); });
+                schedule_main_thread([this] {
+                    player_list_display_.reset();
+                    player_list_last_count_ = -1;
+                    player_list_last_font_size_ = -1;
+                });
             });
         });
     });
 }
 
-inline void BallanceMMOClient::update_player_list(int& last_player_count, int& last_font_size) {
+inline void BallanceMMOClient::update_player_list() {
     auto list_sorter = [](const player_status_list_entry& i1, const player_status_list_entry& i2) {
         const int map_cmp = boost::to_lower_copy(i1.map_name).compare(boost::to_lower_copy(i2.map_name));
         if (map_cmp > 0) return true;
@@ -120,19 +128,19 @@ inline void BallanceMMOClient::update_player_list(int& last_player_count, int& l
     last_player_list_text_ = text;
     lk.unlock();
 
-    utils_.schedule_sync_call([&, this, size] {
+    schedule_main_thread([this, size] {
         std::unique_lock lk(player_status_list_mtx_);
-        if (size != last_player_count) {
-            last_player_count = size;
+        if (!player_list_display_)
+            return;
+        if (size != player_list_last_count_) {
+            player_list_last_count_ = size;
             auto font_size = utils_.get_display_font_size(10.9f - (1.0f / 6) * std::clamp(size, 7, 29));
-            if (last_font_size != font_size) {
-                last_font_size = font_size;
-                if (player_list_display_)
-                    player_list_display_->sprite_->SetFont(utils::get_system_font(), font_size, 400, false, false);
+            if (player_list_last_font_size_ != font_size) {
+                player_list_last_font_size_ = font_size;
+                player_list_display_->sprite_->SetFont(utils::get_system_font(), font_size, 400, false, false);
             }
         }
-        if (player_list_display_)
-            player_list_display_->update(bmmo::string_utils::utf8_to_ansi(last_player_list_text_));
+        player_list_display_->update(bmmo::string_utils::utf8_to_ansi(last_player_list_text_));
     });
 }
 
@@ -1394,7 +1402,10 @@ void BallanceMMOClient::connect_to_server(const char* address, const char* name)
         }
     }
     if (std::strlen(address) == 0) {
-        utils_.schedule_sync_call([this] { server_list_->enter_gui(); });
+        schedule_main_thread([this] {
+            if (server_list_)
+                server_list_->enter_gui();
+        });
         return;
     }
     if (connected() || connecting()) {
@@ -1468,9 +1479,6 @@ void BallanceMMOClient::disconnect_from_server() {
         cleanup();
         SendIngameMessage("Disconnected.");
 
-        ping_->update("");
-        status_->update("Disconnected");
-        status_->paint(0xffff0000);
     }
 }
 
@@ -1498,9 +1506,7 @@ void BallanceMMOClient::on_connection_status_changed(SteamNetConnectionStatusCha
 
     switch (pInfo->m_info.m_eState) {
     case k_ESteamNetworkingConnectionState_None:
-        ping_->update("");
-        status_->update("Disconnected");
-        status_->paint(0xffff0000);
+        schedule_connection_status(k_ESteamNetworkingConnectionState_None, "Disconnected", 0xffff0000, true);
         break;
     case k_ESteamNetworkingConnectionState_ClosedByPeer: {
         std::string s = std::format("Reason: {} ({})", pInfo->m_info.m_szEndDebug, pInfo->m_info.m_eEndReason);
@@ -1531,9 +1537,6 @@ void BallanceMMOClient::on_connection_status_changed(SteamNetConnectionStatusCha
     case k_ESteamNetworkingConnectionState_ProblemDetectedLocally:
     {
         std::string s = std::format("Reason: {} ({})", pInfo->m_info.m_szEndDebug, pInfo->m_info.m_eEndReason);
-        ping_->update("");
-        status_->update("Disconnected");
-        status_->paint(0xffff0000);
         // Print an appropriate message
         if (pInfo->m_eOldState == k_ESteamNetworkingConnectionState_Connecting) {
             // Note: we could distinguish between a timeout, a rejected connection,
@@ -1565,14 +1568,10 @@ void BallanceMMOClient::on_connection_status_changed(SteamNetConnectionStatusCha
 
     case k_ESteamNetworkingConnectionState_Connecting:
         // We will get this callback when we start connecting.
-        status_->update("Connecting");
-        status_->paint(0xFFF6A71B);
+        schedule_connection_status(k_ESteamNetworkingConnectionState_Connecting, "Connecting", 0xFFF6A71B);
         break;
 
     case k_ESteamNetworkingConnectionState_Connected: {
-        std::lock_guard lk(bml_mtx_);
-        status_->update("Connected (Login requested)");
-        //status_->paint(0xff00ff00);
         SendIngameMessage("Connected to server.");
         std::string nickname = db_.get_nickname();
         config_manager_.check_and_save_name_change_time();
@@ -1581,16 +1580,25 @@ void BallanceMMOClient::on_connection_status_changed(SteamNetConnectionStatusCha
             nickname = bmmo::name_validator::get_spectator_nickname(nickname);
             SendIngameMessage("Note: Spectator Mode is enabled. Your actions will be invisible to other players.");
             local_state_handler_ = std::make_unique<spectator_state_handler>(thread_pool_, this, GetLogger());
-            spectator_label_ = std::make_shared<text_sprite>("Spectator_Label", "[Spectator Mode]", RIGHT_MOST, 0.9625f);
-            spectator_label_->sprite_->SetFont("Arial", utils_.get_display_font_size(11.72f), 500, false, false);
-            spectator_label_->set_visible(true);
         }
         else {
             local_state_handler_ = std::make_unique<player_state_handler>(thread_pool_, this, GetLogger());
         }
-        player_ball_ = get_current_ball();
-        if (player_ball_)
-            local_state_handler_->set_ball_type(db_.get_ball_id(player_ball_->GetName()));
+
+        schedule_main_thread([this] {
+            if (estate_ != k_ESteamNetworkingConnectionState_Connected)
+                return;
+            if (status_)
+                status_->update("Connected (Login requested)");
+            if (spectator_mode_) {
+                spectator_label_ = std::make_shared<text_sprite>("Spectator_Label", "[Spectator Mode]", RIGHT_MOST, 0.9625f);
+                spectator_label_->sprite_->SetFont("Arial", utils_.get_display_font_size(11.72f), 500, false, false);
+                spectator_label_->set_visible(true);
+            }
+            player_ball_ = get_current_ball();
+            if (player_ball_ && local_state_handler_)
+                local_state_handler_->set_ball_type(db_.get_ball_id(player_ball_->GetName()));
+        });
 
         SendIngameMessage(("Logging in as \"" + nickname + "\"...").c_str());
         bmmo::login_request_v3_msg msg{};
@@ -1612,7 +1620,10 @@ void BallanceMMOClient::on_connection_status_changed(SteamNetConnectionStatusCha
                 auto status = get_status();
                 average_ping_ = (average_ping_ * 3 + status.m_nPing) / 4;
                 std::string str = utils::pretty_status(status);
-                ping_->update(str, false);
+                schedule_main_thread([this, str = std::move(str)] {
+                    if (ping_ && connected())
+                        ping_->update(str);
+                });
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             };
         });
@@ -1866,7 +1877,7 @@ void BallanceMMOClient::on_message(ISteamNetworkingMessage* network_msg) {
             play_wave_sound(sound_knock_);
             utils_.flash_window();
             db_.remove(msg->content.connection_id);
-            utils_.schedule_sync_call([this, id = msg->content.connection_id] {
+            schedule_main_thread([this, id = msg->content.connection_id] {
                 objects_.remove(id);
                 for (const auto& i : listeners_)
                     i->on_player_logout(id);
@@ -2281,14 +2292,14 @@ void BallanceMMOClient::on_message(ISteamNetworkingMessage* network_msg) {
     case bmmo::PermanentNotification: {
         auto msg = bmmo::message_utils::deserialize<bmmo::permanent_notification_msg>(network_msg);
         if (msg.text_content.empty()) {
-            utils_.schedule_sync_call([=] { permanent_notification_.reset(); });
+            schedule_main_thread([this] { permanent_notification_.reset(); });
             SendIngameMessage(std::format("[Bulletin] {} - Content cleared.", msg.title),
                               bmmo::color_code(msg.code));
             break;
         }
         std::string parsed_text = bmmo::string_utils::parse_line_breaks(msg.text_content);
         if (!permanent_notification_) {
-            utils_.schedule_sync_call([=] {
+            schedule_main_thread([this, parsed_text] {
                 permanent_notification_ = std::make_shared<decltype(permanent_notification_)::element_type>("Bulletin", bmmo::string_utils::utf8_to_ansi(parsed_text).c_str(), 0.2f, 0.036f);
                 permanent_notification_->sprite_->SetSize({0.6f, 0.12f});
                 permanent_notification_->sprite_->SetPosition({0.2f, 0.036f});
@@ -2300,7 +2311,10 @@ void BallanceMMOClient::on_message(ISteamNetworkingMessage* network_msg) {
             });
         }
         else
-            utils_.schedule_sync_call([=] { permanent_notification_->update(bmmo::string_utils::utf8_to_ansi(parsed_text).c_str()); });
+            schedule_main_thread([this, parsed_text] {
+                if (permanent_notification_)
+                    permanent_notification_->update(bmmo::string_utils::utf8_to_ansi(parsed_text).c_str());
+            });
         SendIngameMessage(std::format("[Bulletin] {}: {}", msg.title, 
 #ifdef BMMO_USE_BML_PLUS
                           (loader_version_ >= BMLVersion{ 0, 3, 9 }) ?

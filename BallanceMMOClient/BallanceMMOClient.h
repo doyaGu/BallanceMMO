@@ -190,8 +190,10 @@ private:
 	std::vector<player_status_list_entry> player_status_list_;
 	std::mutex player_status_list_mtx_;
 	std::string last_player_list_text_;
+	int player_list_last_count_ = -1;
+	int player_list_last_font_size_ = -1;
 	void show_player_list();
-	inline void update_player_list(int& last_player_count, int& last_font_size);
+	inline void update_player_list();
 
 	void connect_to_server(const char* address, const char* name = "") override;
 	void disconnect_from_server() override;
@@ -806,8 +808,57 @@ private:
 		}
 	}
 
+	inline void schedule_main_thread(std::function<void()>&& func) {
+		if (exit_started_)
+			return;
+		utils_.schedule_sync_call([this, func = std::move(func)]() mutable {
+			if (exit_started_)
+				return;
+			func();
+		});
+	}
+
+	inline void schedule_connection_status(ESteamNetworkingConnectionState expected_state,
+			std::string text,
+			CKDWORD color,
+			bool clear_ping = false) {
+		schedule_main_thread([this, expected_state, text = std::move(text), color, clear_ping] {
+			if (estate_ != expected_state)
+				return;
+			if (clear_ping && ping_)
+				ping_->update("");
+			if (status_) {
+				status_->update(text.c_str());
+				status_->paint(color);
+			}
+		});
+	}
+
 	void begin_exit_game();
 	void destroy_exit_ui_resources();
+
+	inline void schedule_runtime_cleanup() {
+		schedule_main_thread([this] {
+			std::lock_guard lk(bml_mtx_);
+			own_ball_visible_ = false;
+			objects_.destroy_all_objects();
+			cleanup_received_sounds();
+			std::lock_guard player_list_lk(player_status_list_mtx_);
+			last_player_list_text_.clear();
+			player_list_last_count_ = -1;
+			player_list_last_font_size_ = -1;
+			if (!connecting() && !connected()) {
+				if (ping_)
+					ping_->update("");
+				if (status_) {
+					status_->update("Disconnected");
+					status_->paint(0xffff0000);
+				}
+				spectator_label_.reset();
+				permanent_notification_.reset();
+			}
+		});
+	}
 
 	void cleanup(bool down = false, bool linger = true) {
 		client_cv_.notify_all();
@@ -858,12 +909,10 @@ private:
 			return;
 		}
 
-		toggle_own_spirit_ball(false);
+		schedule_runtime_cleanup();
 		map_names_.clear();
 		db_.clear();
-		objects_.destroy_all_objects();
 		local_state_handler_.reset();
-		cleanup_received_sounds();
 
 		{
 			std::lock_guard client_lk(client_mtx_);
@@ -871,6 +920,8 @@ private:
 				i->on_logout();
 		}
 
+		work_guard_.reset();
+		resolver_.reset();
 		if (!io_ctx_.stopped())
 			io_ctx_.stop();
 
@@ -880,16 +931,6 @@ private:
 		if (down) // Since the game's going down, we don't care about text shown.
 			return;
 
-		if (ping_)
-			ping_->update("");
-
-		if (status_) {
-			status_->update("Disconnected");
-			status_->paint(0xffff0000);
-		}
-
-		spectator_label_.reset();
-		permanent_notification_.reset();
 		db_.set_nickname(config_manager_["playername"]->GetString());
 		db_.set_client_id(k_HSteamNetConnection_Invalid + ((rand() << 16) | rand())); // invalid id indicates server
 	}
