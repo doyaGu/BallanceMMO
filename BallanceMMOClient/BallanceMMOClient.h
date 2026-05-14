@@ -849,6 +849,15 @@ private:
 	void begin_exit_game();
 	void destroy_exit_ui_resources();
 
+	void destroy_runtime_ck_resources(bool destroy_templates = false) {
+		std::lock_guard lk(bml_mtx_);
+		own_ball_visible_ = false;
+		objects_.destroy_all_objects();
+		if (destroy_templates)
+			objects_.destroy_templates();
+		cleanup_received_sounds();
+	}
+
 	inline void ensure_socket_initialized() {
 		if (socket_initialized_)
 			return;
@@ -869,10 +878,7 @@ private:
 
 	inline void schedule_runtime_cleanup() {
 		schedule_main_thread([this] {
-			std::lock_guard lk(bml_mtx_);
-			own_ball_visible_ = false;
-			objects_.destroy_all_objects();
-			cleanup_received_sounds();
+			destroy_runtime_ck_resources();
 			std::lock_guard player_list_lk(player_status_list_mtx_);
 			last_player_list_text_.clear();
 			player_list_last_count_ = -1;
@@ -936,6 +942,7 @@ private:
 			local_state_handler_.reset();
 			map_names_.clear();
 			db_.clear();
+			destroy_runtime_ck_resources(true);
 			return;
 		}
 

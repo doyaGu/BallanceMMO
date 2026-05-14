@@ -435,8 +435,11 @@ public:
 		auto* ctx = bml_->GetCKContext();
 		for (auto i : template_balls_) {
 			auto* obj = ctx->GetObject(i);
-			bml_->GetCKContext()->DestroyObject(obj);
+			if (obj)
+				ctx->DestroyObject(obj);
 		}
+		template_balls_.clear();
+		template_init_ = false;
 	}
 
 	std::string get_username_label_text(const std::string& name, bool cheated, uint16_t ping) const {
