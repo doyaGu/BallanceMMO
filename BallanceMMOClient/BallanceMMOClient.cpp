@@ -370,12 +370,15 @@ void BallanceMMOClient::OnPostStartMenu()
 }
 
 void BallanceMMOClient::OnProcess() {
+    if (exit_started_)
+        return;
+
     //poll_connection_state_changes();
     //poll_incoming_messages();
 
     //poll_status_toggle();
     poll_local_input();
-    if (init_)
+    if (init_ && server_list_)
         server_list_->process();
 
     {
@@ -647,10 +650,43 @@ void BallanceMMOClient::OnModifyConfig(BMMO_CKSTRING category, BMMO_CKSTRING key
 
 void BallanceMMOClient::OnExitGame()
 {
-    UnhookWinEvent(move_size_hook_);
+    begin_exit_game();
+}
+
+void BallanceMMOClient::begin_exit_game()
+{
+    std::lock_guard lk(bml_mtx_);
+
+    if (exit_started_.exchange(true))
+        return;
+
+    init_ = false;
+    player_list_visible_ = false;
+    client_cv_.notify_all();
     config_manager_.check_and_save_name_change_time();
-    cleanup(true);
-    client::destroy();
+
+    if (move_size_hook_) {
+        UnhookWinEvent(move_size_hook_);
+        move_size_hook_ = nullptr;
+    }
+}
+
+void BallanceMMOClient::destroy_exit_ui_resources()
+{
+    std::lock_guard lk(bml_mtx_);
+
+    {
+        std::lock_guard player_list_lk(player_status_list_mtx_);
+        last_player_list_text_.clear();
+        player_list_display_.reset();
+    }
+
+    compensation_lives_label_.reset();
+    server_list_.reset();
+    ping_.reset();
+    status_.reset();
+    spectator_label_.reset();
+    permanent_notification_.reset();
 }
 
 inline void BallanceMMOClient::on_fatal_error(char* extra_text) {
@@ -668,10 +704,13 @@ inline void BallanceMMOClient::on_fatal_error(char* extra_text) {
     send(msg, k_nSteamNetworkingSend_Reliable);
 }
 
-//void BallanceMMOClient::OnUnload() {
-//    cleanup(true);
-//    client::destroy();
-//}
+void BallanceMMOClient::OnUnload() {
+    begin_exit_game();
+    cleanup(true);
+    destroy_exit_ui_resources();
+    client::destroy();
+    NSDumpFile::StopCrashHandler();
+}
 
 void BallanceMMOClient::OnCommand(IBML* bml, const std::vector<std::string>& args)
 {

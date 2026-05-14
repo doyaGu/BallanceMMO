@@ -144,7 +144,7 @@ private:
 	void OnLoad() override;
 	void OnPostStartMenu() override;
 	void OnExitGame() override;
-	//void OnUnload() override;
+	void OnUnload() override;
 	void OnProcess() override;
 	void OnStartLevel() override;
 	void OnLoadObject(BMMO_CKSTRING filename, BOOL isMap, BMMO_CKSTRING masterName, CK_CLASSID filterClass, BOOL addtoscene, BOOL reuseMeshes, BOOL reuseMaterials, BOOL dynamic, XObjectArray* objArray, CKObject* masterObj) override;
@@ -228,6 +228,7 @@ private:
 	std::thread ping_thread_;
 	std::thread player_list_thread_;
 
+	std::atomic_bool exit_started_ = false;
 	std::atomic_bool player_list_visible_ = false;
 	std::atomic<float> average_ping_ = 0; // why no atomic_float
 
@@ -805,20 +806,24 @@ private:
 		}
 	}
 
+	void begin_exit_game();
+	void destroy_exit_ui_resources();
+
 	void cleanup(bool down = false, bool linger = true) {
-		std::lock_guard lk(bml_mtx_);
 		client_cv_.notify_all();
-		if (player_list_visible_) {
-			player_list_visible_ = false;
+		player_list_visible_ = false;
+		if (down) {
+			if (player_list_thread_.joinable())
+				player_list_thread_.join();
+		}
+		else if (player_list_thread_.joinable()) {
 			asio::post(thread_pool_, [this] {
 				if (player_list_thread_.joinable()) player_list_thread_.join();
 			});
 		}
 		if (down) {
 			console_window_.hide();
-			asio::post(thread_pool_, [this] {
-				console_window_.free_thread();
-			});
+			console_window_.free_thread();
 		}
 
 		shutdown(linger);
@@ -834,6 +839,25 @@ private:
 			//network_thread_.join();
 
 		//thread_pool_.stop();
+		if (down) {
+			if (ping_thread_.joinable())
+				ping_thread_.join();
+			if (network_thread_.joinable())
+				network_thread_.join();
+			work_guard_.reset();
+			resolver_.reset();
+			if (!io_ctx_.stopped())
+				io_ctx_.stop();
+			resolving_endpoint_ = false;
+			logged_in_ = false;
+			thread_pool_.stop();
+			thread_pool_.join();
+			local_state_handler_.reset();
+			map_names_.clear();
+			db_.clear();
+			return;
+		}
+
 		toggle_own_spirit_ball(false);
 		map_names_.clear();
 		db_.clear();
