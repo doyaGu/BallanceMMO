@@ -818,6 +818,17 @@ private:
 		});
 	}
 
+	template <typename Function>
+	inline void schedule_background_work(Function&& func) {
+		if (exit_started_)
+			return;
+		asio::post(thread_pool_, [this, func = std::forward<Function>(func)]() mutable {
+			if (exit_started_)
+				return;
+			func();
+		});
+	}
+
 	inline void schedule_connection_status(ESteamNetworkingConnectionState expected_state,
 			std::string text,
 			CKDWORD color,

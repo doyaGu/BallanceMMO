@@ -1075,7 +1075,9 @@ void BallanceMMOClient::init_commands() {
                                       boost::uuids::to_string(config_manager_.get_uuid())));
         SendIngameMessage("Keep this secret as it is possible to impersonate you with your UUID!");
     });
-    console_.register_command("fatalerror", [] { std::thread([] { trigger_fatal_error(); }).detach(); });
+    console_.register_command("fatalerror", [this] {
+        schedule_background_work([] { trigger_fatal_error(); });
+    });
     console_.register_command("cheat", [&] {
         bmmo::cheat_toggle_msg msg{};
         msg.content.cheated = (console_.get_next_word(true) == "on");
@@ -2421,7 +2423,7 @@ void BallanceMMOClient::on_message(ISteamNetworkingMessage* network_msg) {
             SendIngameMessage("Error receiving sound!");
             break;
         }
-        std::thread([this, msg = std::move(msg)] {
+        schedule_background_work([this, msg = std::move(msg)] {
             if (!msg.caption.empty())
                 SendIngameMessage("Now playing: " + msg.caption);
             utils_.flash_window();
@@ -2439,30 +2441,30 @@ void BallanceMMOClient::on_message(ISteamNetworkingMessage* network_msg) {
                 duration = sound->GetSoundLength();
             logger_->Info("Sound length: %d / %.2f = %.0f milliseconds; Gain: %.2f; Pitch: %.2f",
                               duration, msg.pitch, duration / msg.pitch, msg.gain, msg.pitch);
-            utils_.schedule_sync_call([=] { sound->Play(); });
+            schedule_main_thread([sound] { sound->Play(); });
 
             if (duration >= sound->GetSoundLength())
                 duration = sound->GetSoundLength() + 1000;
             std::this_thread::sleep_for(std::chrono::milliseconds(int(duration / msg.pitch)));
-            utils_.schedule_sync_call([=] {
+            schedule_main_thread([this, sound] {
                 std::lock_guard lk(bml_mtx_);
                 if (!received_wave_sounds_.contains(sound))
                     return;
                 destroy_wave_sound(sound, true);
                 received_wave_sounds_.erase(sound);
             });
-        }).detach();
+        });
         break;
     }
     case bmmo::PopupBox: {
         auto msg = bmmo::message_utils::deserialize<bmmo::popup_box_msg>(network_msg);
         SendIngameMessage("[Popup] {" + msg.title + "}: " + msg.text_content, bmmo::color_code(msg.code));
-        std::thread([this, msg = std::move(msg)] {
+        schedule_background_work([this, msg = std::move(msg)] {
             std::ignore = MessageBoxW(utils_.get_main_window(),
                                       bmmo::string_utils::ConvertUtf8ToWide(msg.text_content).c_str(),
                                       bmmo::string_utils::ConvertUtf8ToWide(msg.title).c_str(),
                                       MB_OK | MB_ICONINFORMATION);
-        }).detach();
+        });
         break;
     }
     default:
