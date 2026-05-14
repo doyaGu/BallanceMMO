@@ -3,6 +3,7 @@
 #endif // !WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <Dbghelp.h>
+#include <cstring>
 #include <iostream>
 #include <vector>
 #include <tchar.h>
@@ -17,6 +18,12 @@
 
 namespace NSDumpFile {
     typedef BOOL(WINAPI* MINIDUMPWRITEDUMP)(HANDLE hProcess, DWORD dwPid, HANDLE hFile, MINIDUMP_TYPE DumpType, CONST PMINIDUMP_EXCEPTION_INFORMATION ExceptionParam, CONST PMINIDUMP_USER_STREAM_INFORMATION UserStreamParam, CONST PMINIDUMP_CALLBACK_INFORMATION CallbackParam);
+
+    constexpr size_t SetUnhandledExceptionFilterPatchSize = 5;
+    unsigned char OriginalSetUnhandledExceptionFilterBytes[SetUnhandledExceptionFilterPatchSize]{};
+    void* SetUnhandledExceptionFilterEntry = nullptr;
+    LPTOP_LEVEL_EXCEPTION_FILTER PreviousUnhandledExceptionFilter = nullptr;
+    bool SetUnhandledExceptionFilterPatched = false;
 
     void CreateDumpFile(LPCSTR lpstrDumpFilePathName, EXCEPTION_POINTERS* pException)
     {
@@ -59,37 +66,70 @@ namespace NSDumpFile {
         return NULL;
     }
 
+    std::function<void(char*)> CrashCallback{};
+    static bool messageBoxTriggered = false;
+
+    bool WriteSetUnhandledExceptionFilterBytes(const unsigned char* bytes)
+    {
+        if (!SetUnhandledExceptionFilterEntry || !bytes)
+            return false;
+
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(SetUnhandledExceptionFilterEntry, SetUnhandledExceptionFilterPatchSize,
+                            PAGE_EXECUTE_READWRITE, &oldProtect))
+            return false;
+
+        std::memcpy(SetUnhandledExceptionFilterEntry, bytes, SetUnhandledExceptionFilterPatchSize);
+        FlushInstructionCache(GetCurrentProcess(), SetUnhandledExceptionFilterEntry,
+                              SetUnhandledExceptionFilterPatchSize);
+
+        DWORD ignoredProtect = 0;
+        VirtualProtect(SetUnhandledExceptionFilterEntry, SetUnhandledExceptionFilterPatchSize,
+                       oldProtect, &ignoredProtect);
+        return true;
+    }
+
     BOOL PreventSetUnhandledExceptionFilter()
     {
-        HMODULE hKernel32 = LoadLibrary(_T("kernel32.dll"));
+        if (SetUnhandledExceptionFilterPatched)
+            return TRUE;
+
+        HMODULE hKernel32 = GetModuleHandle(_T("kernel32.dll"));
         if (hKernel32 == NULL)
             return FALSE;
-
 
         void* pOrgEntry = GetProcAddress(hKernel32, "SetUnhandledExceptionFilter");
         if (pOrgEntry == NULL)
             return FALSE;
 
+        SetUnhandledExceptionFilterEntry = pOrgEntry;
+        std::memcpy(OriginalSetUnhandledExceptionFilterBytes, pOrgEntry,
+                    SetUnhandledExceptionFilterPatchSize);
 
-        unsigned char newJump[100];
+        unsigned char newJump[SetUnhandledExceptionFilterPatchSize]{};
         DWORD dwOrgEntryAddr = (DWORD)pOrgEntry;
-        dwOrgEntryAddr += 5; // add 5 for 5 op-codes for jmp far
-
+        dwOrgEntryAddr += SetUnhandledExceptionFilterPatchSize;
 
         void* pNewFunc = &MyDummySetUnhandledExceptionFilter;
         DWORD dwNewEntryAddr = (DWORD)pNewFunc;
         DWORD dwRelativeAddr = dwNewEntryAddr - dwOrgEntryAddr;
 
+        newJump[0] = 0xE9;
+        std::memcpy(&newJump[1], &dwRelativeAddr, sizeof(dwRelativeAddr));
 
-        newJump[0] = 0xE9;  // JMP absolute
-        memcpy(&newJump[1], &dwRelativeAddr, sizeof(pNewFunc));
-        SIZE_T bytesWritten;
-        BOOL bRet = WriteProcessMemory(GetCurrentProcess(), pOrgEntry, newJump, sizeof(pNewFunc) + 1, &bytesWritten);
-        return bRet;
+        SetUnhandledExceptionFilterPatched = WriteSetUnhandledExceptionFilterBytes(newJump);
+        return SetUnhandledExceptionFilterPatched;
     }
 
-    std::function<void(char*)> CrashCallback{};
-    static bool messageBoxTriggered = false;
+    void RestoreSetUnhandledExceptionFilter()
+    {
+        if (!SetUnhandledExceptionFilterPatched)
+            return;
+
+        WriteSetUnhandledExceptionFilterBytes(OriginalSetUnhandledExceptionFilterBytes);
+        SetUnhandledExceptionFilterPatched = false;
+        SetUnhandledExceptionFilterEntry = nullptr;
+    }
 
     LONG WINAPI UnhandledExceptionFilterEx(struct ::_EXCEPTION_POINTERS* pException)
     {
@@ -158,7 +198,15 @@ namespace NSDumpFile {
     void RunCrashHandler(std::function<void(char*)> Callback)
     {
         CrashCallback = Callback;
-        SetUnhandledExceptionFilter(UnhandledExceptionFilterEx);
+        PreviousUnhandledExceptionFilter = SetUnhandledExceptionFilter(UnhandledExceptionFilterEx);
         PreventSetUnhandledExceptionFilter();
+    }
+
+    void StopCrashHandler()
+    {
+        RestoreSetUnhandledExceptionFilter();
+        SetUnhandledExceptionFilter(PreviousUnhandledExceptionFilter);
+        PreviousUnhandledExceptionFilter = nullptr;
+        CrashCallback = {};
     }
 }

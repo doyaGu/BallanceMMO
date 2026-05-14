@@ -32,6 +32,7 @@ namespace NSDumpFile
     };
 
     void RunCrashHandler(std::function<void(char*)> Callback);
+    void StopCrashHandler();
 };
 
 
